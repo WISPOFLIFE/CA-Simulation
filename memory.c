@@ -1,362 +1,168 @@
-#include "memory.h"
+/*
+ * memory.c — Package 3 memory module
+ *
+ * Harvard architecture:
+ *   Instruction memory : 1024 × 16-bit words
+ *   Data memory        : 2048 × 8-bit bytes
+ *   Register file      : 64 × 8-bit GPRs + 8-bit SREG + 16-bit PC
+ *
+ * All arrays (instructionMemory, data_mem, R, SREG, PC) are the
+ * canonical globals defined in main.c.  This file provides helper
+ * structs and functions used internally.
+ */
 
-// ============================================================================
-// INSTRUCTION MEMORY FUNCTIONS
-// ============================================================================
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
-void init_instruction_memory(InstructionMemory* imem) {
-    if(imem==NULL) 
-        return; 
+#define INST_MEM_SIZE    1024
+#define DATA_MEM_SIZE    2048
+#define NUM_GPRS         64
 
-    memset(imem->memory, 0, sizeof(uint16_t)*INST_MEM_SIZE);
+/* Status-register bit masks (same order as alu.c) */
+#define SREG_C_MASK      (1 << 4)   /* Carry    */
+#define SREG_V_MASK      (1 << 3)   /* Overflow */
+#define SREG_N_MASK      (1 << 2)   /* Negative */
+#define SREG_S_MASK      (1 << 1)   /* Sign     */
+#define SREG_Z_MASK      (1 << 0)   /* Zero     */
+#define SREG_RESERVED    (0xE0)     /* bits 7:5 always 0 */
+
+/* ── Struct definitions (for local use / pipeline.c) ── */
+
+typedef struct {
+    uint16_t memory[INST_MEM_SIZE];
+} InstructionMemory;
+
+typedef struct {
+    uint8_t memory[DATA_MEM_SIZE];
+} DataMemory;
+
+typedef struct {
+    uint8_t  gpr[NUM_GPRS];
+    uint8_t  sreg;
+    uint16_t pc;
+} RegisterFile;
+
+/* ── Instruction memory helpers ── */
+
+void init_instruction_memory(InstructionMemory *imem) {
+    if (!imem) return;
+    memset(imem->memory, 0, sizeof(imem->memory));
 }
 
-int load_instruction(InstructionMemory* imem, uint16_t address, uint16_t instruction) {
-    if(imem==NULL) 
-        return 0;
-    if(!is_valid_inst_address(address))
-        return 0;
-    imem->memory[address] = instruction;
+int load_instruction(InstructionMemory *imem, uint16_t addr, uint16_t instr) {
+    if (!imem || addr >= INST_MEM_SIZE) return 0;
+    imem->memory[addr] = instr;
     return 1;
 }
 
-int fetch_instruction(const InstructionMemory* imem, uint16_t address, uint16_t* instruction) {
-    if(imem==NULL || instruction==NULL)
-        return 0;
-    if(!is_valid_inst_address(address))
-        return 0;
-
-    *instruction = imem->memory[address];
+int fetch_instruction(const InstructionMemory *imem,
+                      uint16_t addr, uint16_t *out) {
+    if (!imem || !out || addr >= INST_MEM_SIZE) return 0;
+    *out = imem->memory[addr];
     return 1;
 }
 
-void print_instruction_memory(const InstructionMemory* imem) {
-    if(imem==NULL)
-        return;
-    
-    printf("\n=== Instruction Memory (1024 x 16 bits) ===\n");
-    printf("Address\t| Hex\t\t| Binary (16 bits)\n");
-    printf("--------|---------------|-----------------\n");
+/* ── Data memory helpers ── */
 
-    for(int i=0; i<INST_MEM_SIZE; i++) {
-        if(imem->memory[i]!=0) {
-            printf("%d\t| 0x%04X\t\t| ", i, imem->memory[i]);
-
-            for(int bit=15; bit>=0; bit--) {
-                printf("%d", (imem->memory[i] >> bit) & 1);
-                if(bit==8)
-                    printf(" "); // Space between upper and lower byte
-            }
-            printf("\n");
-        }
-    }
-    printf("\nNote: Only non-zero memory locations are shown above.\n");
-    printf("All other addresses contain 0.\n");
+void init_data_memory(DataMemory *dmem) {
+    if (!dmem) return;
+    memset(dmem->memory, 0, sizeof(dmem->memory));
 }
 
-// ============================================================================
-// DATA MEMORY FUNCTIONS
-// ============================================================================
-
-void init_data_memory(DataMemory* dmem) {
-    if(dmem==NULL)
-        return;
-
-    memset(dmem->memory, 0, sizeof(uint8_t)*DATA_MEM_SIZE);
-}
-
-int write_data_byte(DataMemory* dmem, uint16_t address, uint8_t value) {
-        return 0;
-    if(!is_valid_data_address(address))
-        return 0;
-
-    dmem->memory[address] = value;
+int write_data_byte(DataMemory *dmem, uint16_t addr, uint8_t val) {
+    if (!dmem || addr >= DATA_MEM_SIZE) return 0;
+    dmem->memory[addr] = val;
     return 1;
 }
 
-int read_data_byte(const DataMemory* dmem, uint16_t address, uint8_t* value) {
-    if(dmem==NULL || value==NULL)
-        return 0;
-    if(!is_valid_data_address(address))
-        return 0;
-
-    *value = dmem->memory[address];
+int read_data_byte(const DataMemory *dmem, uint16_t addr, uint8_t *val) {
+    if (!dmem || !val || addr >= DATA_MEM_SIZE) return 0;
+    *val = dmem->memory[addr];
     return 1;
 }
 
-void print_data_memory(const DataMemory* dmem) {
-    // Print data memory addresses 1024-2047 (data section)
-    // Format: "Address X: 0xYY (decimal: Z, binary: ...)"
-    if(dmem==NULL)
-        return;
-    
-    printf("\n=== Data Memory (2048 x 8 bits) ===\n");
-    printf("Address\t| Hex\t| Dec\t| Binary (8 bits)\n");
-    printf("--------|-------|-------|----------------\n");
+/* ── Register file helpers ── */
 
-    for(int i=1024; i<DATA_MEM_SIZE; i++) {
-        if(dmem->memory[i]!=0) {
-            printf("%d\t| 0x%02X\t| %d\t| ", i, dmem->memory[i], dmem->memory[i]);
-
-            for(int bit=7; bit>=0; bit--) {
-                printf("%d", (dmem->memory[i] >> bit) & 1);
-            }
-            printf("\n");
-        }
-    }
-    printf("\nNote: Only non-zero memory locations are shown above.\n");
-    printf("All other addresses contain 0.\n");
+void init_register_file(RegisterFile *rf) {
+    if (!rf) return;
+    memset(rf->gpr, 0, sizeof(rf->gpr));
+    rf->sreg = 0;
+    rf->pc   = 0;
 }
 
-// ============================================================================
-// REGISTER FILE FUNCTIONS
-// ============================================================================
-
-void init_register_file(RegisterFile* regs) {
-    if(regs==NULL)
-        return;
-
-    memset(regs->gpr, 0, sizeof(uint8_t)*NUM_GPRS);
-    regs->sreg = 0;
-    regs->pc = 0;
-}
-
-int read_gpr(const RegisterFile* regs, uint8_t reg_num, uint8_t* value) {
-    if(regs==NULL || value==NULL)
-        return 0;
-    if(!is_valid_gpr_number(reg_num))
-        return 0;
-
-    *value = regs->gpr[reg_num];
+int read_gpr(const RegisterFile *rf, uint8_t n, uint8_t *val) {
+    if (!rf || !val || n >= NUM_GPRS) return 0;
+    *val = rf->gpr[n];
     return 1;
 }
 
-int write_gpr(RegisterFile* regs, uint8_t reg_num, uint8_t value) {
-    if(regs==NULL)
-        return 0;
-    if(!is_valid_gpr_number(reg_num))
-        return 0;
-
-    regs->gpr[reg_num] = value;
+int write_gpr(RegisterFile *rf, uint8_t n, uint8_t val) {
+    if (!rf || n >= NUM_GPRS) return 0;
+    rf->gpr[n] = val;
     return 1;
 }
 
-uint16_t read_pc(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-
-    return regs->pc;
+uint16_t read_pc(const RegisterFile *rf) {
+    return rf ? rf->pc : 0;
 }
 
-void write_pc(RegisterFile* regs, uint16_t new_pc) {
-    if(regs==NULL)
-        return;
-
-    regs->pc = new_pc & 0x03FF; // Ensure PC wraps around at 1024
+void write_pc(RegisterFile *rf, uint16_t pc) {
+    if (!rf) return;
+    rf->pc = pc & 0x03FF; /* wrap at 1024 */
 }
 
-void increment_pc(RegisterFile* regs) {
-    if(regs==NULL)
-        return;
-
-    write_pc(regs, regs->pc + 1);
+void increment_pc(RegisterFile *rf) {
+    if (!rf) return;
+    write_pc(rf, rf->pc + 1);
 }
 
-uint8_t read_sreg(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-
-    return regs->sreg;
+uint8_t read_sreg(const RegisterFile *rf) {
+    return rf ? rf->sreg : 0;
 }
 
-void write_sreg(RegisterFile* regs, uint8_t value) {
-    if(regs==NULL)
-        return;
-
-    regs->sreg = value & ~SREG_RESERVED_MASK;
+void write_sreg(RegisterFile *rf, uint8_t val) {
+    if (!rf) return;
+    rf->sreg = val & ~SREG_RESERVED;
 }
 
-// ============================================================================
-// FLAG OPERATIONS
-// ============================================================================
+/* ── Individual flag accessors ── */
 
-int get_carry_flag(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-    
-    return (regs->sreg & SREG_C_MASK) ? 1 : 0;
+static int flag_bit(const RegisterFile *rf, uint8_t mask) {
+    return rf ? ((rf->sreg & mask) ? 1 : 0) : 0;
+}
+static void set_flag(RegisterFile *rf, uint8_t mask, int val) {
+    if (!rf) return;
+    if (val) rf->sreg |= mask; else rf->sreg &= ~mask;
+    rf->sreg &= ~SREG_RESERVED;
 }
 
-void set_carry_flag(RegisterFile* regs, int value) {
-    // Set Carry flag to 1 if value != 0, else clear it
-    // Use bitwise OR to set, AND with complement to clear
-    if(regs==NULL)
-        return;
+int  get_carry_flag(const RegisterFile *rf)        { return flag_bit(rf, SREG_C_MASK); }
+void set_carry_flag(RegisterFile *rf, int v)       { set_flag(rf, SREG_C_MASK, v); }
+int  get_overflow_flag(const RegisterFile *rf)     { return flag_bit(rf, SREG_V_MASK); }
+void set_overflow_flag(RegisterFile *rf, int v)    { set_flag(rf, SREG_V_MASK, v); }
+int  get_negative_flag(const RegisterFile *rf)     { return flag_bit(rf, SREG_N_MASK); }
+void set_negative_flag(RegisterFile *rf, int v)    { set_flag(rf, SREG_N_MASK, v); }
+int  get_sign_flag(const RegisterFile *rf)         { return flag_bit(rf, SREG_S_MASK); }
+void set_sign_flag(RegisterFile *rf, int v)        { set_flag(rf, SREG_S_MASK, v); }
+int  get_zero_flag(const RegisterFile *rf)         { return flag_bit(rf, SREG_Z_MASK); }
+void set_zero_flag(RegisterFile *rf, int v)        { set_flag(rf, SREG_Z_MASK, v); }
 
-    if(value != 0)
-        regs->sreg |= SREG_C_MASK;
-    else
-        regs->sreg &= ~SREG_C_MASK;
-    
-    regs->sreg &= ~SREG_RESERVED_MASK;
+void update_zero_flag(RegisterFile *rf, uint8_t result) {
+    set_zero_flag(rf, result == 0);
+}
+void update_negative_flag(RegisterFile *rf, uint8_t result) {
+    set_negative_flag(rf, (result & 0x80) ? 1 : 0);
+}
+void update_sign_flag(RegisterFile *rf) {
+    set_sign_flag(rf, get_negative_flag(rf) ^ get_overflow_flag(rf));
+}
+void reset_flags(RegisterFile *rf) {
+    if (!rf) return;
+    rf->sreg &= SREG_RESERVED; /* clear all 5 flag bits */
+    rf->sreg &= ~SREG_RESERVED;
 }
 
-int get_overflow_flag(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-
-    return (regs->sreg & SREG_V_MASK) ? 1 : 0;
-}
-
-void set_overflow_flag(RegisterFile* regs, int value) {
-    if(regs==NULL)
-        return;
-
-    if(value != 0)
-        regs->sreg |= SREG_V_MASK;
-    else
-        regs->sreg &= ~SREG_V_MASK;
-
-     regs->sreg &= ~SREG_RESERVED_MASK;
-}
-
-int get_negative_flag(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-
-    return (regs->sreg & SREG_N_MASK) ? 1 : 0;
-}
-
-void set_negative_flag(RegisterFile* regs, int value) {
-    if(regs==NULL)
-        return;
-
-    if(value != 0)
-        regs->sreg |= SREG_N_MASK;
-    else
-        regs->sreg &= ~SREG_N_MASK;
-
-    regs->sreg &= ~SREG_RESERVED_MASK;
-}
-
-int get_sign_flag(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-
-    return (regs->sreg & SREG_S_MASK) ? 1 : 0;
-}
-
-void set_sign_flag(RegisterFile* regs, int value) {
-    if(regs==NULL)
-        return;
-
-    if(value != 0)
-        regs->sreg |= SREG_S_MASK;
-    else
-        regs->sreg &= ~SREG_S_MASK;
-
-    regs->sreg &= ~SREG_RESERVED_MASK;
-}
-
-int get_zero_flag(const RegisterFile* regs) {
-    if(regs==NULL)
-        return 0;
-
-    return (regs->sreg & SREG_Z_MASK) ? 1 : 0;
-}
-
-void set_zero_flag(RegisterFile* regs, int value) {
-    if(regs==NULL)
-        return;
-
-    if(value != 0)
-        regs->sreg |= SREG_Z_MASK;
-    else
-        regs->sreg &= ~SREG_Z_MASK;
-
-    regs->sreg &= ~SREG_RESERVED_MASK;
-}
-
-void update_zero_flag(RegisterFile* regs, uint8_t result) {
-    // Set Zero flag if result == 0, clear otherwise
-    if(regs==NULL)
-        return;
-    
-    set_zero_flag(regs, (result==0) ? 1 : 0);
-}
-
-void update_negative_flag(RegisterFile* regs, uint8_t result) {
-    // Set Negative flag if MSB (bit 7) of result is 1
-    // Check result & 0x80
-    if(regs==NULL)
-        return;
-
-    set_negative_flag(regs, (result & 0x80) ? 1 : 0);
-}
-
-void update_sign_flag(RegisterFile* regs) {
-    // Get N and V flags, XOR them, set S flag accordingly
-    if(regs==NULL)
-        return;
-    
-    int n = get_negative_flag(regs);
-    int v = get_overflow_flag(regs);
-    set_sign_flag(regs, (n ^ v) ? 1 : 0);
-}
-
-void reset_flags(RegisterFile* regs) {
-    if(regs==NULL)
-        return;
-
-    regs->sreg &= ~(SREG_C_MASK | SREG_V_MASK | SREG_N_MASK | SREG_S_MASK | SREG_Z_MASK);
-    regs->sreg &= ~SREG_RESERVED_MASK;
-}
-
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
-
-void print_all_registers(const RegisterFile* regs) {
-    if(regs==NULL)
-        return;
-    
-    // Print GPRs (R0-R63)
-    printf("\n=== General Purpose Registers (R0 - R63) ===\n");
-    printf("Each register: 8 bits\n");
-    
-    for(int i = 0; i < NUM_GPRS; i++) {
-        if(i % 8 == 0) {
-            printf("\nR%02d-R%02d: ", i, (i+7 < NUM_GPRS) ? i+7 : NUM_GPRS-1);
-        }
-        printf("R%02d=0x%02X (%3d)  ", i, regs->gpr[i], regs->gpr[i]);
-    }
-    
-    // Print Special Registers
-    printf("\n\n=== Special Purpose Registers ===\n");
-    printf("PC (Program Counter): 0x%04X (%d)\n", regs->pc, regs->pc);
-    
-    printf("SREG (Status Register): 0x%02X (binary: ", regs->sreg);
-    for(int bit = 7; bit >= 0; bit--) {
-        printf("%d", (regs->sreg >> bit) & 1);
-    }
-    printf(")\n");
-    
-    printf("  Flags:\n");
-    printf("    C (Carry):      %d\n", get_carry_flag(regs));
-    printf("    V (Overflow):   %d\n", get_overflow_flag(regs));
-    printf("    N (Negative):   %d\n", get_negative_flag(regs));
-    printf("    S (Sign):       %d\n", get_sign_flag(regs));
-    printf("    Z (Zero):       %d\n", get_zero_flag(regs));
-}
-
-int is_valid_inst_address(uint16_t address) {
-    return (address < INST_MEM_SIZE) ? 1 : 0;
-}
-
-int is_valid_data_address(uint16_t address) {
-    return (address < DATA_MEM_SIZE) ? 1 : 0;
-}
-
-int is_valid_gpr_number(uint8_t reg_num) {
-    return (reg_num < NUM_GPRS) ? 1 : 0;
-}
+int is_valid_inst_address(uint16_t addr) { return addr < INST_MEM_SIZE; }
+int is_valid_data_address(uint16_t addr) { return addr < DATA_MEM_SIZE; }
+int is_valid_gpr_number(uint8_t n)       { return n < NUM_GPRS; }
